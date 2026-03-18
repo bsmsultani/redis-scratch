@@ -26,7 +26,34 @@ class RESPError(Exception):
         return NotImplemented
 
 
+class _incomplete(Exception):
+    """
+    Internal signal: the buffer doesn't have enough bytes to complete parsing.
+    Never escapes the parser - caught by parser_one() and converted to None.
+    
+    """
+    pass
 
+# =============================================================================
+# RESP PARSER
+# =============================================================================
+# The parser takes raw bytes from the network and produces Python objects.
+#
+# Architecture:
+#   ┌──────────┐    feed()    ┌──────────┐   parse_one()   ┌──────────┐
+#   │  Network  │ ──────────→ │  Buffer   │ ──────────────→ │  Python  │
+#   │  (bytes)  │             │  (bytes)  │                 │  object  │
+#   └──────────┘              └──────────┘                  └──────────┘
+#
+# The buffer acts as a STAGING AREA between the unpredictable network and
+# the structured parser. This decoupling is a key design principle in
+# networked systems.
+#
+# COMPLEXITY ANALYSIS:
+#   - feed(): O(n) where n = bytes received (memoryview could optimize this)
+#   - parse_one(): O(m) where m = size of one RESP message
+#   - Space: O(b) where b = total buffered bytes
+# =============================================================================
 
 
 
