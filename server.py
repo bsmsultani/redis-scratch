@@ -60,7 +60,7 @@ class _incomplete(Exception):
 class RESPParser():
     def __init__(self):
         self._buffer : bytearray = bytearray()
-        self._pos = 0
+        self._pos : int = 0
 
     def feed(self, data : bytes) -> None:
         """
@@ -83,8 +83,69 @@ class RESPParser():
 
         if self._pos >= len(self._buffer):
             return None
-
-
         saved_pos = self._pos
 
+
+    def _read_byte(self) -> int:
+        """
+        Read a single byte from the buffer and advance the position.
+
+        Returns:
+            int: the byte value (0 - 255)
+        
+        Raises:
+            _Incomplete: If the buffer is exhausted.
+
+        Time complexity: O(1)
+        """
+        if self._pos >= len(self._buffer):
+            return _incomplete()
+
+        byte = self._buffer[self._pos]
+        self._pos += 1
+        return byte
+
+
+
+
+    def parse_next(self) -> Any:
+        """
+        Parse the current RESP element starting at the current position
+
+        This is a TYPE DISPATCHER - it reads the first byte to determine the RESP type,
+        then delegates to the approperiate sub-parser
+        """
+
+        type_byte = self._read_byte()
+
+        # DISPATCH TABLE - each RESP type has a one-byte prefix. We dispatch it based on that
+        if type_byte == ord("+"):
+
+            # Simple String: +OK\r\n
+            return self._parse_simple_string()
+
+
+    def _parse_simple_string(self) -> int:
+        """
+        Parse a simple string: +<content>\r\n
+
+        
+        """
+        line = self._read_line()
+        return line
+
+
+    def _read_line(self) -> str:
+        """
+        Read bytes until \r\n is found. Return content WITHOUT the \r\n.
+
+
+        Returns:
+            str: The line content (without \r\n)
+
+        Raises:
+            _Incomplete: if \r\n hasn't arrvied yet
+        
+        time Complexity: O(k) where k = length of the line
+        """
         
