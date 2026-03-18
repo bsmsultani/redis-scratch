@@ -26,7 +26,7 @@ class RESPError(Exception):
         return NotImplemented
 
 
-class _incomplete(Exception):
+class _Incomplete(Exception):
     """
     Internal signal: the buffer doesn't have enough bytes to complete parsing.
     Never escapes the parser - caught by parser_one() and converted to None.
@@ -99,13 +99,11 @@ class RESPParser():
         Time complexity: O(1)
         """
         if self._pos >= len(self._buffer):
-            return _incomplete()
+            return _Incomplete()
 
         byte = self._buffer[self._pos]
         self._pos += 1
         return byte
-
-
 
 
     def parse_next(self) -> Any:
@@ -120,19 +118,97 @@ class RESPParser():
 
         # DISPATCH TABLE - each RESP type has a one-byte prefix. We dispatch it based on that
         if type_byte == ord("+"):
-
             # Simple String: +OK\r\n
             return self._parse_simple_string()
+
+        elif type_byte == ord("-"):
+            # SIMPLE: -ERR message\r\n
+            return self._parse_error()
+        
+        elif type_byte == ord(":"):
+            # Integer: 1000\r\n
+            return self._parse_integer()
+        
+        elif type_byte == ord("$"):
+            # Bulk String: $5\r\nhello\r\n or $-1\r\n (null)
+            return self._parse_bulk_string()
+
+        elif type_byte == ord("*"):
+            # Array: *2\r\n...\r\n or *-1\r\n (null)
+            return self._parse_array()
+
+        elif type_byte == ord("_"):
+            # Null (RESP3): _\r\n
+            return self._parse_null()
+
+        else:
+
+            return self._parse_inline_command(type_byte)
+        
+
+    def _parse_bulk_string(self):
+
+        length_line = self._read_line()
+        length = int(length_line)
+
+        if length == -1:
+            return None
+        
+
+        data = self._read_byte(length)
+        crlf = self._read_byte(2)
+        
+    
+    def _parse_integer(self):
+        """
+        Parse an Integer: :<number>\r\n
+
+
+        Returns:
+            int: the parsed integer value.
+
+        Raises:
+            ValueError: if the content is not a valid integer.
+
+        time complexity: O(d) where d is the number of digits
+        
+        """
+        line = self._read_line()
+        return int(line)
+
+
+    
+    def _parse_error(self) -> int:
+        """
+        Parse an Error: -<error message>\r\n
+
+        Errors look just like simple strings but are semantically different.
+        By wrapping them in RESPError, the calling code can be distinguish:
+
+        result = parser.parse_one()
+        if isinstance(result, RESPError):
+            print(f"Server error: {result.message}")
+        else:
+            print(f"Success: {result}")
+        
+        """
+        line = self._read_line()
+        return RESPError(line)
+
 
 
     def _parse_simple_string(self) -> int:
         """
         Parse a simple string: +<content>\r\n
 
-        
+        EXAMPLES:
+            +OK\r\n     -> "OK"
+            +PONG\r\n   -> "PONG"
+            +QUEUED\r\n -> "QUEUED"
         """
         line = self._read_line()
         return line
+
 
 
     def _read_line(self) -> str:
@@ -148,4 +224,11 @@ class RESPParser():
         
         time Complexity: O(k) where k = length of the line
         """
-        
+        crlf_pos = self._buffer.find(b'\r\n', self._pos)
+        if crlf_pos == -1:
+            return _Incomplete()
+
+        line_bytes = self._buffer[self._pos: crlf_pos]
+        self._pos = crlf_pos + 2
+
+        return line_bytes.decode('utf-8')
