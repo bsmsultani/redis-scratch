@@ -35,31 +35,73 @@ class ClientConnection:
         """
         Reads bytes from the buffer and sends it to the parser for parsing
         """
+        try:
 
-        data = self._socket.recv(4096)
+            data = self._socket.recv(4096)
 
-        if not data:
+            if not data:
+                self._alive = False
+                return []
+
+            self._parser.feed(data)
+
+            commands = []
+            while True:
+                parsed = self._parser.parse_one()
+                if parsed is None:
+                    break
+
+                commands.append(parsed)
+
+            return commands
+        
+        except BlockingIOError:
+            return []
+
+        except ConnectionResetError:
             self._alive = False
             return []
 
-        self._parser.feed(data)
+        except OSError:
+            self._alive = False
+            return []
 
-        commands = []
-        while True:
-            parsed = self._parser.parse_one()
-            if parsed is None:
-                break
-
-            commands.append(parsed)
-
-        return commands
+    def write(self, response) -> None:
+        self._write_buffer.extend(response)
+        self._flush_write_buffer()
 
 
-    def write(self) -> None:
-        pass
+    def _flush_write_buffer(self) -> None:
+        if not self._write_buffer:
+            return
+
+        try:
+            sent = self._socket.send(bytes(self._write_buffer))
+            self._write_buffer = self._write_buffer[sent:]
+
+        except BlockingIOError:
+            pass
+        except (ConnectionError, BrokenPipeError, OSError):
+            self._alive = False
+            self._write_buffer.clear()
 
     def close(self) -> None:
-        pass
+        self._alive = False
+        self._write_buffer.clear()
+        self._multi_queue.clear()
+        self._subscriptions.clear()
+
+        try:
+            self._socket.close()
+        
+        except OSError:
+            pass # socket maybe already closed
+
+
+    def fileno(self) -> int:
+        return self._socket.fileno()
+
+        
 
 
 
