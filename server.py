@@ -154,3 +154,20 @@ class RedisServer:
         # ── SERVER METADATA ───────────────────────────────────
         self._start_time: float = time.time()
         self._running: bool = False
+    
+    def start(self) -> None:
+        """
+        Bind and listen to the server
+        """
+        self._socket.bind((self._host, self._port))
+        self._socket.listen()
+
+        self._selector.register(self._socket, selectors.EVENT_READ, self._accept_connection)
+
+
+    
+    def _accept_connection(self, sock):
+        client_sock, add = sock.accept()
+        client_sock.set_blocking(False)
+
+
