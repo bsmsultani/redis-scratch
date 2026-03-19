@@ -1,5 +1,5 @@
 import socket
-from protocol import RESPParser
+from protocol import RESPParser, RESPSerializer
 import selectors
 import time
 
@@ -8,13 +8,14 @@ class ClientConnection:
 
         self._socket = socket
         self._address = address
-        self._alive : bool = False
+        self._is_alive : bool = False
         self._write_buffer : bytearray = bytearray()
         self._parser : RESPParser = RESPParser()
 
         # Which of the 16 databases this client is talking to.
         # Client A can do SELECT 3, Client B stays on 0.
         # They see completely different keyspaces.
+
         self._selected_db: int = 0
 
         # Has this client logged in? Only matters if server
@@ -42,7 +43,7 @@ class ClientConnection:
             data = self._socket.recv(4096)
 
             if not data:
-                self._alive = False
+                self._is_alive = False
                 return []
 
             self._parser.feed(data)
@@ -61,11 +62,11 @@ class ClientConnection:
             return []
 
         except ConnectionResetError:
-            self._alive = False
+            self._is_alive = False
             return []
 
         except OSError:
-            self._alive = False
+            self._is_alive = False
             return []
 
     def write(self, response) -> None:
@@ -84,11 +85,11 @@ class ClientConnection:
         except BlockingIOError:
             pass
         except (ConnectionError, BrokenPipeError, OSError):
-            self._alive = False
+            self._is_alive = False
             self._write_buffer.clear()
 
     def close(self) -> None:
-        self._alive = False
+        self._is_alive = False
         self._write_buffer.clear()
         self._multi_queue.clear()
         self._subscriptions.clear()
@@ -106,68 +107,293 @@ class ClientConnection:
 
 
 
-
-
 class RedisServer:
-    def __init__(self, host = '127.0.0.1', port = 8818, config = None):
-
-        # ── SERVER SOCKET ─────────────────────────────────────
-        # AF_INET = IPv4, SOCK_STREAM = TCP
+    def __init__(self, host='127.0.0.1', port=6379, config=None):
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-        # SO_REUSEADDR lets us restart the server immediately after
-        # a crash. Without it, the OS holds the port for ~60 seconds
-        # (TIME_WAIT state) and you get "Address already in use."
         self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._socket.setblocking(False)
 
         self._host = host
         self._port = port
 
-        # ── I/O MULTIPLEXING ──────────────────────────────────
-        # selectors picks the best method for your OS:
-        #   Linux  → epoll   (O(1) per ready fd)
-        #   macOS  → kqueue  (O(1) per ready fd)
-        #   Other  → select  (O(n) scan every fd)
-        #
-        # This is how ONE thread handles thousands of clients.
-        # Instead of blocking on one socket, we ask the OS:
-        # "which sockets have data ready?" — then handle only those.
         self._selector = selectors.DefaultSelector()
+        self._clients: dict = {}  # fd -> ClientConnection
 
-        # ── CLIENT TRACKING ───────────────────────────────────
-        # Maps file descriptor (int) → ClientConnection
-        # fd is the unique ID the OS assigns to each socket.
-        # We use it as the key because selectors return fds.
-        self._clients: dict = {}   # fd -> ClientConnection
+        self._database = None
+        self._command_router = None
+        self._expiry_engine = None
+        self._pubsub = None
+        self._config = config
 
-        # ── CORE COMPONENTS (stubs for now) ───────────────────
-        # These will be real classes as you build each module.
-        # For now, None is fine — the server can start and accept
-        # connections without them.
-        self._database = None       # KeyspaceManager (Phase 2)
-        self._command_router = None  # CommandRouter   (Phase 2)
-        self._expiry_engine = None   # ExpiryEngine    (Phase 4)
-        self._pubsub = None          # PubSubManager   (Phase 4)
-        self._config = config        # ServerConfig    (Phase 6)
-
-        # ── SERVER METADATA ───────────────────────────────────
         self._start_time: float = time.time()
         self._running: bool = False
-    
+
     def start(self) -> None:
         """
-        Bind and listen to the server
+        Bind, listen, and enter the main event loop.
+
+        This is the HEART of the server. It runs forever (until shutdown)
+        in a single thread, handling all clients via I/O multiplexing.
+
+        The loop on each iteration:
+          1. Ask the OS: "which sockets have events?" (selector.select)
+          2. For each ready socket:
+             - If it's the SERVER socket → accept new connection
+             - If it's a CLIENT socket  → read commands, execute, respond
+          3. Run periodic tasks (expiry sweep, persistence)
         """
+        # ── BIND & LISTEN ─────────────────────────────────────
+        # bind() claims the address, listen() starts accepting connections.
+        # backlog=128 means the OS queues up to 128 pending connections
+        # before refusing new ones. Real Redis uses 511.
         self._socket.bind((self._host, self._port))
-        self._socket.listen()
+        self._socket.listen(128)
 
-        self._selector.register(self._socket, selectors.EVENT_READ, self._accept_connection)
+        # Register the SERVER socket for READ events.
+        # When a new client connects, the server socket becomes "readable" —
+        # that's the OS telling us "someone is knocking, call accept()."
+        self._selector.register(
+            self._socket,
+            selectors.EVENT_READ,
+            data=None  # None = this is the server socket, not a client
+        )
+
+        self._running = True
+        print(f"Redis server running on {self._host}:{self._port}")
+
+        # ── THE EVENT LOOP ────────────────────────────────────
+        # This single loop handles EVERYTHING:
+        #   - New connections
+        #   - Reading commands from any client
+        #   - Flushing write buffers
+        #   - Background tasks
+        #
+        # It never blocks for long because selector.select(timeout=1)
+        # returns after at most 1 second, even if no events fire.
+        # That timeout is what lets periodic tasks run regularly.
+        while self._running:
+            try:
+                # Wait up to 1 second for any socket events.
+                # Returns a list of (key, event_mask) pairs.
+                # key.fileobj = the socket, key.data = our attached data.
+                events = self._selector.select(timeout=1)
+
+                for key, mask in events:
+                    if key.data is None:
+                        # data=None means this is the server socket.
+                        # A readable server socket = new client knocking.
+                        self._accept_connection()
+                    else:
+                        # This is a client socket. key.data is the
+                        # ClientConnection we attached during accept.
+                        client = key.data
+
+                        if mask & selectors.EVENT_READ:
+                            self._handle_client(client)
+
+                        if mask & selectors.EVENT_WRITE:
+                            # Socket is writable — flush any pending bytes.
+                            client._flush_write_buffer()
+
+                            # If nothing left to send, stop listening for
+                            # WRITE events (saves CPU). Re-register as
+                            # READ only.
+                            if not client.has_pending_writes:
+                                self._selector.modify(
+                                    client.fileno(),
+                                    selectors.EVENT_READ,
+                                    data=client
+                                )
+
+                # ── PERIODIC TASKS ────────────────────────────
+                self._run_periodic_tasks()
+
+            except KeyboardInterrupt:
+                # Ctrl+C pressed — graceful shutdown
+                print("\nShutting down...")
+                self.shutdown()
+                break
+
+    def _accept_connection(self) -> None:
+        """
+        Accept a new client and register it with the selector.
+
+        Called when the server socket is readable (new client connecting).
+        Creates a ClientConnection wrapper and starts listening for
+        READ events on the new socket.
+        """
+        try:
+            client_socket, address = self._socket.accept()
+
+            # Wrap in our ClientConnection — this creates the
+            # dedicated parser, write buffer, and all client state.
+            connection = ClientConnection(client_socket, address)
+
+            # Register with selector: watch for READ events.
+            # We attach the ClientConnection object as key.data
+            # so we can retrieve it when events fire.
+            self._selector.register(
+                client_socket,
+                selectors.EVENT_READ,
+                data=connection
+            )
+
+            # Track by file descriptor for easy lookup/cleanup.
+            self._clients[client_socket.fileno()] = connection
+
+            print(f"Client connected: {address}")
+
+        except OSError:
+            pass  # accept() can fail if client disconnected immediately
+
+    def _handle_client(self, client: ClientConnection) -> None:
+        """
+        Read commands from a client, execute them, send responses.
+
+        Called when a client socket is readable (has data to read).
+        One call might process multiple pipelined commands.
+        """
+        commands = client.read()
+
+        # ── CHECK IF CLIENT DISCONNECTED ──────────────────────
+        if not client._is_alive:
+            self._remove_client(client)
+            return
+
+        # ── PROCESS EACH COMMAND ──────────────────────────────
+        for cmd in commands:
+            response = self._execute_command(client, cmd)
+            client.write(response)
+
+            # If write() filled the buffer and couldn't send
+            # everything, start listening for WRITE events too
+            # so we can flush when the socket is ready.
+            if client.has_pending_writes:
+                try:
+                    self._selector.modify(
+                        client.fileno(),
+                        selectors.EVENT_READ | selectors.EVENT_WRITE,
+                        data=client
+                    )
+                except (KeyError, ValueError):
+                    pass  # already unregistered or closed
+
+    def _execute_command(self, client: ClientConnection, cmd) -> bytes:
+        """
+        Route a single command and return the RESP-encoded response.
+
+        This is a temporary implementation. Once you build CommandRouter
+        in Phase 2, this becomes:
+            return self._command_router.execute(client, cmd)
+        """
+        # For now, handle just PING and ECHO so we can test the server.
+        if not isinstance(cmd, list) or len(cmd) == 0:
+            return RESPSerializer.encode_error("ERR empty command")
+
+        command_name = cmd[0].upper() if isinstance(cmd[0], str) else ""
+
+        if command_name == "PING":
+            if len(cmd) > 1:
+                return RESPSerializer.encode_bulk_string(cmd[1])
+            return RESPSerializer.encode_simple_string("PONG")
+
+        elif command_name == "ECHO":
+            if len(cmd) < 2:
+                return RESPSerializer.encode_error(
+                    "ERR wrong number of arguments for 'echo' command"
+                )
+            return RESPSerializer.encode_bulk_string(cmd[1])
+
+        elif command_name == "QUIT":
+            client._is_alive = False
+            return RESPSerializer.encode_simple_string("OK")
+
+        else:
+            return RESPSerializer.encode_error(
+                f"ERR unknown command '{command_name}'"
+            )
+
+    def _remove_client(self, client: ClientConnection) -> None:
+        """
+        Unregister a client from the selector and clean up.
+
+        Called when client.i._is_alive is False (disconnect or error).
+        """
+        fd = client.fileno()
+
+        try:
+            self._selector.unregister(fd)
+        except (KeyError, ValueError):
+            pass  # already unregistered
+
+        client.close()
+        self._clients.pop(fd, None)
+
+        print(f"Client disconnected: {client._address}")
+
+    def _run_periodic_tasks(self) -> None:
+        """
+        Background maintenance tasks. Called once per event loop iteration.
+
+        These are stubs — you'll fill them in as you build each module:
+          - Expiry sweep (Phase 4): delete keys that have expired
+          - Persistence check (Phase 5): trigger RDB/AOF save if needed
+          - Eviction check (Phase 4): free memory if over the limit
+        """
+        # Phase 4: Expiry sweep
+        # if self._expiry_engine:
+        #     self._expiry_engine.sweep_active()
+
+        # Phase 5: Persistence
+        # if self._rdb and self._rdb.should_save(...):
+        #     self._rdb.save()
+
+        # Phase 4: Memory eviction
+        # if self._eviction_manager:
+        #     self._eviction_manager.check_and_evict(self._database)
+        pass
+
+    def shutdown(self) -> None:
+        """
+        Graceful shutdown: close all clients, close server socket.
+
+        Order matters:
+          1. Stop the loop (so we don't accept new work)
+          2. Close every client (flush what we can, free resources)
+          3. Unregister and close the server socket
+          4. Close the selector
+        """
+        self._running = False
+
+        # Close all client connections
+        for fd, client in list(self._clients.items()):
+            self._remove_client(client)
+
+        # Close the server socket
+        try:
+            self._selector.unregister(self._socket)
+        except (KeyError, ValueError):
+            pass
+
+        self._socket.close()
+        self._selector.close()
+
+        print("Server shut down.")
+
+    # ── PROPERTIES ────────────────────────────────────────────
+
+    @property
+    def uptime(self) -> float:
+        """Seconds since server started."""
+        return time.time() - self._start_time
+
+    @property
+    def connected_clients(self) -> int:
+        """Number of currently connected clients."""
+        return len(self._clients)
 
 
-    
-    def _accept_connection(self, sock):
-        client_sock, add = sock.accept()
-        client_sock.set_blocking(False)
 
-
+if __name__ == "__main__":
+    server = RedisServer()
+    server.start()
