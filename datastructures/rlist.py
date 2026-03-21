@@ -1,4 +1,5 @@
 
+from turtle import st
 from typing import Optional, Any, List, Iterator
 from __future__ import annotations
 
@@ -298,3 +299,47 @@ class DoublyLinkedList:
             yield cur.value
             cur = cur.next
             
+
+
+class RedisList:
+    def __init__(self):
+        self._list = DoublyLinkedList()
+
+    def lpush(self, *values : str) -> int:
+        for value in values:
+            self._list.push(value=value)
+
+        return len(self._list)
+
+    def rpush(self, *values : str) -> int:
+        for value in values:
+            self._list.push_tail(value)
+
+        return len(self._list)
+
+    def lpop(self):
+        return self._list.pop_head()
+
+    def rpop(self):
+        return self._list.push_tail()
+
+    def lindex(self, index: int) -> Optional[str]:
+        return self._list.get_by_index(index)
+
+    def lset(self, index: int, value: str) -> bool:
+        return self._list.set_by_index(index, value)
+
+    def linsert(self, where: str, pivot: str, value: str) -> int:
+        if where.upper() == "BEFORE":
+            return self._list.insert_before(pivot, value)
+        elif where.upper() == "AFTER":
+            return self._list.insert_after(pivot, value)
+        else:
+            raise ValueError("where must be BEFORE or AFTER")
+
+    def lrem(self, count: int, value: str) -> int:
+        return self._list.remove(count, value)
+
+    def ltrim(self, start: int, stop: int) -> None:
+        self._list.trim(start, stop)
+

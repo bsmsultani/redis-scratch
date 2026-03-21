@@ -514,6 +514,7 @@ Class: DoublyLinkedList
 │   - Remove `count` occurrences of value
 │   - count > 0: remove from head; count < 0: from tail; count == 0: all
 │   - Return number actually removed
+
 │
 ├── trim(self, start: int, stop: int) -> None   # O(n)
 │   - Keep only elements in [start, stop] range
