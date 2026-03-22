@@ -906,6 +906,8 @@ class RESPSerializer:
         for item in items:
             result += RESPSerializer.encode(item)
 
+
+
         return result
 
     @staticmethod

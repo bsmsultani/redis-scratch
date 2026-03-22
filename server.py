@@ -1,5 +1,7 @@
 import socket
 from protocol import RESPParser, RESPSerializer
+from command_router import CommandRouter
+from database import KeyspaceManager
 import selectors
 import time
 
@@ -8,7 +10,7 @@ class ClientConnection:
 
         self._socket = socket
         self._address = address
-        self._is_alive : bool = False
+        self._is_alive : bool = True
         self._write_buffer : bytearray = bytearray()
         self._parser : RESPParser = RESPParser()
 
@@ -101,6 +103,10 @@ class ClientConnection:
             pass # socket maybe already closed
 
 
+    @property
+    def has_pending_writes(self) -> bool:
+        return len(self._write_buffer) > 0
+
     def fileno(self) -> int:
         return self._socket.fileno()
 
@@ -119,8 +125,8 @@ class RedisServer:
         self._selector = selectors.DefaultSelector()
         self._clients: dict = {}  # fd -> ClientConnection
 
-        self._database = None
-        self._command_router = None
+        self._keyspace = KeyspaceManager()
+        self._command_router = CommandRouter(self._keyspace)
         self._expiry_engine = None
         self._pubsub = None
         self._config = config
@@ -224,6 +230,7 @@ class RedisServer:
         """
         try:
             client_socket, address = self._socket.accept()
+            client_socket.setblocking(False)
 
             # Wrap in our ClientConnection — this creates the
             # dedicated parser, write buffer, and all client state.
@@ -281,37 +288,9 @@ class RedisServer:
     def _execute_command(self, client: ClientConnection, cmd) -> bytes:
         """
         Route a single command and return the RESP-encoded response.
-
-        This is a temporary implementation. Once you build CommandRouter
-        in Phase 2, this becomes:
-            return self._command_router.execute(client, cmd)
+        Delegates to CommandRouter which handles all registered commands.
         """
-        # For now, handle just PING and ECHO so we can test the server.
-        if not isinstance(cmd, list) or len(cmd) == 0:
-            return RESPSerializer.encode_error("ERR empty command")
-
-        command_name = cmd[0].upper() if isinstance(cmd[0], str) else ""
-
-        if command_name == "PING":
-            if len(cmd) > 1:
-                return RESPSerializer.encode_bulk_string(cmd[1])
-            return RESPSerializer.encode_simple_string("PONG")
-
-        elif command_name == "ECHO":
-            if len(cmd) < 2:
-                return RESPSerializer.encode_error(
-                    "ERR wrong number of arguments for 'echo' command"
-                )
-            return RESPSerializer.encode_bulk_string(cmd[1])
-
-        elif command_name == "QUIT":
-            client._is_alive = False
-            return RESPSerializer.encode_simple_string("OK")
-
-        else:
-            return RESPSerializer.encode_error(
-                f"ERR unknown command '{command_name}'"
-            )
+        return self._command_router.execute(client, cmd)
 
     def _remove_client(self, client: ClientConnection) -> None:
         """
