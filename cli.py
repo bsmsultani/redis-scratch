@@ -61,6 +61,9 @@ COMMANDS = [
     "GET", "SET", "SETNX", "SETEX", "MGET", "MSET",
     "INCR", "DECR", "INCRBY", "DECRBY", "INCRBYFLOAT",
     "APPEND", "STRLEN", "GETRANGE", "SETRANGE",
+    # Lists
+    "LPUSH", "RPUSH", "LPOP", "RPOP", "LLEN", "LRANGE",
+    "LINDEX", "LSET", "LINSERT", "LREM", "LTRIM",
     # Keys
     "DEL", "EXISTS", "KEYS", "TYPE", "RENAME",
     "EXPIRE", "PEXPIRE", "TTL", "PTTL", "PERSIST",
@@ -190,6 +193,8 @@ def print_help():
         "Strings": ["GET", "SET", "SETNX", "SETEX", "MGET", "MSET",
                      "INCR", "DECR", "INCRBY", "DECRBY", "INCRBYFLOAT",
                      "APPEND", "STRLEN", "GETRANGE", "SETRANGE"],
+        "Lists":   ["LPUSH", "RPUSH", "LPOP", "RPOP", "LLEN", "LRANGE",
+                     "LINDEX", "LSET", "LINSERT", "LREM", "LTRIM"],
         "Keys":    ["DEL", "EXISTS", "KEYS", "TYPE", "RENAME",
                      "EXPIRE", "PEXPIRE", "TTL", "PTTL", "PERSIST",
                      "SCAN", "RANDOMKEY"],

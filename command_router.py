@@ -36,6 +36,7 @@ from typing import Callable, Optional
 from protocol import RESPSerializer, RESPError
 from database import KeyspaceManager, Database, ValueType, WrongTypeError
 from datastructures.rstring import RedisString
+from datastructures.rlist import RedisList
 
 
 # =============================================================================
@@ -154,7 +155,7 @@ class CommandRouter:
         self._register_string_commands()
 
         # Uncomment as you build each data structure:
-        # self._register_list_commands()
+        self._register_list_commands()
         # self._register_hash_commands()
         # self._register_set_commands()
         # self._register_sorted_set_commands()
@@ -165,6 +166,123 @@ class CommandRouter:
     # =================================================================
     # SERVER COMMANDS — PING, ECHO, SELECT, DBSIZE, etc.
     # =================================================================
+
+    def _register_list_commands(self) -> None:
+
+        def cmd_lpush(client, db, args) -> bytes:
+            key = args[0]
+            values = args[1:]
+            entry = db.get_or_create(key, ValueType.LIST, RedisList)
+            count = entry.value.lpush(*values)
+            return RESPSerializer.encode_integer(count)
+
+        def cmd_rpush(client, db, args) -> bytes:
+            key = args[0]
+            values = args[1:]
+            entry = db.get_or_create(key, ValueType.LIST, RedisList)
+            count = entry.value.rpush(*values)
+            return RESPSerializer.encode_integer(count)
+
+        def cmd_lpop(client, db, args) -> bytes:
+            entry = db.get(args[0])
+            if entry is None:
+                return RESPSerializer.encode_bulk_string(None)
+            if entry.type != ValueType.LIST:
+                raise WrongTypeError()
+            result = entry.value.lpop()
+            return RESPSerializer.encode_bulk_string(result)
+
+        def cmd_rpop(client, db, args) -> bytes:
+            entry = db.get(args[0])
+            if entry is None:
+                return RESPSerializer.encode_bulk_string(None)
+            if entry.type != ValueType.LIST:
+                raise WrongTypeError()
+            result = entry.value.rpop()
+            return RESPSerializer.encode_bulk_string(result)
+
+        def cmd_llen(client, db, args) -> bytes:
+            entry = db.get(args[0])
+            if entry is None:
+                return RESPSerializer.encode_integer(0)
+            if entry.type != ValueType.LIST:
+                raise WrongTypeError()
+            return RESPSerializer.encode_integer(len(entry.value._list))
+
+        def cmd_lrange(client, db, args) -> bytes:
+            entry = db.get(args[0])
+            if entry is None:
+                return RESPSerializer.encode_array([])
+            if entry.type != ValueType.LIST:
+                raise WrongTypeError()
+            start = int(args[1])
+            stop = int(args[2])
+            result = entry.value._list.range(start, stop)
+            return RESPSerializer.encode_array(result)
+
+        def cmd_lindex(client, db, args) -> bytes:
+            entry = db.get(args[0])
+            if entry is None:
+                return RESPSerializer.encode_bulk_string(None)
+            if entry.type != ValueType.LIST:
+                raise WrongTypeError()
+            index = int(args[1])
+            result = entry.value.lindex(index)
+            return RESPSerializer.encode_bulk_string(result)
+
+        def cmd_lset(client, db, args) -> bytes:
+            entry = db.get(args[0])
+            if entry is None:
+                return RESPSerializer.encode_error("ERR no such key")
+            if entry.type != ValueType.LIST:
+                raise WrongTypeError()
+            index = int(args[1])
+            ok = entry.value.lset(index, args[2])
+            if not ok:
+                return RESPSerializer.encode_error("ERR index out of range")
+            return RESPSerializer.encode_simple_string("OK")
+
+        def cmd_linsert(client, db, args) -> bytes:
+            entry = db.get(args[0])
+            if entry is None:
+                return RESPSerializer.encode_integer(0)
+            if entry.type != ValueType.LIST:
+                raise WrongTypeError()
+            result = entry.value.linsert(args[1], args[2], args[3])
+            return RESPSerializer.encode_integer(result)
+
+        def cmd_lrem(client, db, args) -> bytes:
+            entry = db.get(args[0])
+            if entry is None:
+                return RESPSerializer.encode_integer(0)
+            if entry.type != ValueType.LIST:
+                raise WrongTypeError()
+            count = int(args[1])
+            result = entry.value.lrem(count, args[2])
+            return RESPSerializer.encode_integer(result)
+
+        def cmd_ltrim(client, db, args) -> bytes:
+            entry = db.get(args[0])
+            if entry is None:
+                return RESPSerializer.encode_simple_string("OK")
+            if entry.type != ValueType.LIST:
+                raise WrongTypeError()
+            start = int(args[1])
+            stop = int(args[2])
+            entry.value.ltrim(start, stop)
+            return RESPSerializer.encode_simple_string("OK")
+
+        self.register(CommandSpec("LPUSH", cmd_lpush, 2, -1, {"write"}))
+        self.register(CommandSpec("RPUSH", cmd_rpush, 2, -1, {"write"}))
+        self.register(CommandSpec("LPOP", cmd_lpop, 1, 1, {"write"}))
+        self.register(CommandSpec("RPOP", cmd_rpop, 1, 1, {"write"}))
+        self.register(CommandSpec("LLEN", cmd_llen, 1, 1, {"readonly"}))
+        self.register(CommandSpec("LRANGE", cmd_lrange, 3, 3, {"readonly"}))
+        self.register(CommandSpec("LINDEX", cmd_lindex, 2, 2, {"readonly"}))
+        self.register(CommandSpec("LSET", cmd_lset, 3, 3, {"write"}))
+        self.register(CommandSpec("LINSERT", cmd_linsert, 4, 4, {"write"}))
+        self.register(CommandSpec("LREM", cmd_lrem, 3, 3, {"write"}))
+        self.register(CommandSpec("LTRIM", cmd_ltrim, 3, 3, {"write"}))
 
     def _register_server_commands(self) -> None:
 

@@ -1,7 +1,6 @@
 
-from turtle import st
-from typing import Optional, Any, List, Iterator
 from __future__ import annotations
+from typing import Optional, Any, List, Iterator
 
 class ListNode:
     def __init__(self, value: str):
@@ -66,7 +65,17 @@ class DoublyLinkedList:
         self.length -= 1
         return result
 
-    def get_by_index(self, index : int, value : str) -> Optional[str]:
+    def pop_tail(self) -> Optional[str]:
+        if self.length == 0:
+            return None
+        node = self.tail.prev
+        result = node.value
+        self.tail.prev = node.prev
+        node.prev.next = self.tail
+        self.length -= 1
+        return result
+
+    def get_by_index(self, index : int) -> Optional[str]:
         """
         Returns:
             The value of a node by its index.
@@ -321,7 +330,7 @@ class RedisList:
         return self._list.pop_head()
 
     def rpop(self):
-        return self._list.push_tail()
+        return self._list.pop_tail()
 
     def lindex(self, index: int) -> Optional[str]:
         return self._list.get_by_index(index)
