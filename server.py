@@ -14,25 +14,14 @@ class ClientConnection:
         self._write_buffer : bytearray = bytearray()
         self._parser : RESPParser = RESPParser()
 
-        # Which of the 16 databases this client is talking to.
-        # Client A can do SELECT 3, Client B stays on 0.
-        # They see completely different keyspaces.
-
         self._selected_db: int = 0
 
-        # Has this client logged in? Only matters if server
-        # has a password set. Until True, most commands are rejected.
         self._authenticated: bool = False
 
-        # Is this client inside a MULTI/EXEC transaction block?
-        # When True, commands get QUEUED instead of executed immediately.
         self._in_multi: bool = False
 
-        # The queue of commands waiting for EXEC to run them all at once.
         self._multi_queue: list = []
 
-        # Pub/sub channels this client is listening to.
-        # A subscribed client can ONLY receive messages — no GET/SET.
         self._subscriptions: set = set()
 
 
@@ -135,29 +124,9 @@ class RedisServer:
         self._running: bool = False
 
     def start(self) -> None:
-        """
-        Bind, listen, and enter the main event loop.
-
-        This is the HEART of the server. It runs forever (until shutdown)
-        in a single thread, handling all clients via I/O multiplexing.
-
-        The loop on each iteration:
-          1. Ask the OS: "which sockets have events?" (selector.select)
-          2. For each ready socket:
-             - If it's the SERVER socket → accept new connection
-             - If it's a CLIENT socket  → read commands, execute, respond
-          3. Run periodic tasks (expiry sweep, persistence)
-        """
-        # ── BIND & LISTEN ─────────────────────────────────────
-        # bind() claims the address, listen() starts accepting connections.
-        # backlog=128 means the OS queues up to 128 pending connections
-        # before refusing new ones. Real Redis uses 511.
         self._socket.bind((self._host, self._port))
         self._socket.listen(128)
 
-        # Register the SERVER socket for READ events.
-        # When a new client connects, the server socket becomes "readable" —
-        # that's the OS telling us "someone is knocking, call accept()."
         self._selector.register(
             self._socket,
             selectors.EVENT_READ,
@@ -167,43 +136,22 @@ class RedisServer:
         self._running = True
         print(f"Redis server running on {self._host}:{self._port}")
 
-        # ── THE EVENT LOOP ────────────────────────────────────
-        # This single loop handles EVERYTHING:
-        #   - New connections
-        #   - Reading commands from any client
-        #   - Flushing write buffers
-        #   - Background tasks
-        #
-        # It never blocks for long because selector.select(timeout=1)
-        # returns after at most 1 second, even if no events fire.
-        # That timeout is what lets periodic tasks run regularly.
         while self._running:
             try:
-                # Wait up to 1 second for any socket events.
-                # Returns a list of (key, event_mask) pairs.
-                # key.fileobj = the socket, key.data = our attached data.
                 events = self._selector.select(timeout=1)
 
                 for key, mask in events:
                     if key.data is None:
-                        # data=None means this is the server socket.
-                        # A readable server socket = new client knocking.
                         self._accept_connection()
                     else:
-                        # This is a client socket. key.data is the
-                        # ClientConnection we attached during accept.
                         client = key.data
 
                         if mask & selectors.EVENT_READ:
                             self._handle_client(client)
 
                         if mask & selectors.EVENT_WRITE:
-                            # Socket is writable — flush any pending bytes.
                             client._flush_write_buffer()
 
-                            # If nothing left to send, stop listening for
-                            # WRITE events (saves CPU). Re-register as
-                            # READ only.
                             if not client.has_pending_writes:
                                 self._selector.modify(
                                     client.fileno(),
@@ -221,13 +169,6 @@ class RedisServer:
                 break
 
     def _accept_connection(self) -> None:
-        """
-        Accept a new client and register it with the selector.
-
-        Called when the server socket is readable (new client connecting).
-        Creates a ClientConnection wrapper and starts listening for
-        READ events on the new socket.
-        """
         try:
             client_socket, address = self._socket.accept()
             client_socket.setblocking(False)

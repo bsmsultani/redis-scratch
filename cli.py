@@ -34,10 +34,6 @@ from client import RedisClient
 from protocol import RESPError
 
 
-# ═══════════════════════════════════════════════════════════════════
-# COLORS — ANSI escape codes for terminal coloring
-# ═══════════════════════════════════════════════════════════════════
-
 class Color:
     RESET   = "\033[0m"
     RED     = "\033[31m"
@@ -49,9 +45,6 @@ class Color:
     DIM     = "\033[2m"
 
 
-# ═══════════════════════════════════════════════════════════════════
-# COMMAND LIST — for tab completion
-# ═══════════════════════════════════════════════════════════════════
 
 COMMANDS = [
     # Server / connection
@@ -72,16 +65,11 @@ COMMANDS = [
     "CLEAR", "HELP",
 ]
 
-# Subcommand/flag hints — shown after the main command
 SUBCOMMANDS = {
     "SET": ["EX", "PX", "NX", "XX"],
     "SCAN": ["MATCH", "COUNT"],
 }
 
-
-# ═══════════════════════════════════════════════════════════════════
-# TAB COMPLETER
-# ═══════════════════════════════════════════════════════════════════
 
 class RedisCompleter:
     """
@@ -206,9 +194,6 @@ def print_help():
     print()
 
 
-# ═══════════════════════════════════════════════════════════════════
-# MAIN REPL
-# ═══════════════════════════════════════════════════════════════════
 
 def main():
     host = '127.0.0.1'
@@ -227,7 +212,6 @@ def main():
         else:
             i += 1
 
-    # Connect
     try:
         client = RedisClient(host, port)
     except ConnectionRefusedError:
