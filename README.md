@@ -2,14 +2,6 @@
 
 A Redis server built from scratch in Python. Supports the RESP protocol, multiple data structures, TTLs, pipelining, and comes with an interactive CLI.
 
----
-
-## Why
-
-Wanted to actually understand how Redis works under the hood — the protocol, the event loop, lazy expiry, all of it. So I built one.
-
----
-
 ## Getting started
 
 Start the server:
