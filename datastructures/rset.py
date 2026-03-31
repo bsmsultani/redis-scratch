@@ -6,7 +6,7 @@ class RedisSet:
         self._members: Set[str] = set()
 
     def sadd(self, *members: str) -> int:
-        """Add members. Return count of NEW members added."""
+        """Add members, return count of new ones added."""
         added = 0
         for member in members:
             if member not in self._members:
@@ -15,7 +15,7 @@ class RedisSet:
         return added
 
     def srem(self, *members: str) -> int:
-        """Remove members. Return count removed."""
+        """Remove members, return count removed."""
         removed = 0
         for member in members:
             if member in self._members:
@@ -27,23 +27,23 @@ class RedisSet:
         return member in self._members
 
     def smembers(self) -> Set[str]:
-        """Return all members (copy)."""
+        """Return all members."""
         return set(self._members)
 
     def scard(self) -> int:
-        """Return cardinality (size)."""
+        """Return size."""
         return len(self._members)
 
     def srandmember(self, count: int = 1) -> List[str]:
-        """Return random members WITHOUT removing."""
+        """Return random members without removing them."""
         if count >= 0:
             return random.sample(self._members, min(count, len(self._members)))
         else:
-            # negative count: may repeat, choose abs(count) times
+            # negative count allows repeats
             return [random.choice(tuple(self._members)) for _ in range(abs(count))]
 
     def spop(self, count: int = 1) -> List[str]:
-        """Remove and return random members."""
+        """Pop random members."""
         n = min(count, len(self._members))
         chosen = random.sample(self._members, n)
         for member in chosen:

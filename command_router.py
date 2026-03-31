@@ -1,36 +1,3 @@
-"""
-command_router.py — Command Dispatcher & Registry
-===================================================
-
-This is the GLUE between the network layer and the data layer.
-When the server receives ["SET", "name", "Alice"], the router:
-  1. Looks up "SET" in the registry
-  2. Validates argument count
-  3. Calls the correct handler function
-  4. Returns the RESP-encoded response
-
-DESIGN PATTERNS:
-  - Command Pattern: each command is an encapsulated action with a handler
-  - Registry Pattern: commands register themselves in a dict for O(1) lookup
-  - Single Responsibility: router only dispatches, handlers do the work
-
-WHY NOT A GIANT IF/ELIF CHAIN?
-You could write:
-    if cmd == "GET": ...
-    elif cmd == "SET": ...
-    elif cmd == "LPUSH": ...
-    (50 more elif blocks)
-
-Problems:
-  - One massive function that grows forever
-  - Can't add commands without editing the dispatcher
-  - Hard to test individual commands in isolation
-
-The registry pattern solves all three. Each command is a separate
-function registered in a dict. Adding a new command = writing a
-function + one register() call.
-"""
-
 from dataclasses import dataclass
 from typing import Callable, Optional
 from protocol import RESPSerializer, RESPError
@@ -39,77 +6,33 @@ from datastructures.rstring import RedisString
 from datastructures.rlist import RedisList
 
 
-# =============================================================================
-# COMMAND SPEC — metadata about one command
-# =============================================================================
-
 @dataclass
 class CommandSpec:
-    """
-    Everything the router needs to know about a command.
+    name: str
+    handler: Callable
+    min_args: int
+    max_args: int  # -1 = unlimited
+    flags: set
+    description: str = ""
 
-    Using @dataclass saves us from writing __init__ with 5 parameters.
-    It auto-generates __init__, __repr__, and __eq__.
-
-    OOP Concept: @dataclass is a code generation tool. It's the
-    Pythonic way to create simple "data holder" classes without
-    boilerplate.
-    """
-    name: str               # e.g. "GET", "SET"
-    handler: Callable       # the function to call
-    min_args: int           # minimum arguments (excluding command name)
-    max_args: int           # maximum arguments (-1 = unlimited)
-    flags: set              # e.g. {"readonly", "write", "admin"}
-    description: str = ""   # human-readable help text
-
-
-# =============================================================================
-# COMMAND ROUTER
-# =============================================================================
 
 class CommandRouter:
-    """
-    Routes parsed commands to their handler functions.
-
-    The registry is a dict: command_name (str) → CommandSpec.
-    Lookup is O(1). Adding new commands is one line each.
-    """
-
     def __init__(self, keyspace: KeyspaceManager):
         self._keyspace = keyspace
         self._registry: dict[str, CommandSpec] = {}
         self._register_all_commands()
 
-    # =================================================================
-    # PUBLIC API
-    # =================================================================
-
     def execute(self, client, command_parts: list) -> bytes:
-        """
-        Execute a parsed command and return the RESP-encoded response.
-
-        Args:
-            client: The ClientConnection that sent this command.
-            command_parts: e.g. ["SET", "name", "Alice"]
-
-        Returns:
-            RESP-encoded bytes ready to send back over the wire.
-        """
         if not command_parts:
             return RESPSerializer.encode_error("ERR empty command")
 
-        # Command name is always the first element, uppercased.
         name = command_parts[0].upper() if isinstance(command_parts[0], str) else ""
         args = command_parts[1:]
 
-        # ── LOOK UP IN REGISTRY ───────────────────────────
         spec = self._registry.get(name)
         if spec is None:
-            return RESPSerializer.encode_error(
-                f"ERR unknown command '{name}'"
-            )
+            return RESPSerializer.encode_error(f"ERR unknown command '{name}'")
 
-        # ── VALIDATE ARGUMENT COUNT ───────────────────────
         if len(args) < spec.min_args:
             return RESPSerializer.encode_error(
                 f"ERR wrong number of arguments for '{name}' command"
@@ -119,11 +42,8 @@ class CommandRouter:
                 f"ERR wrong number of arguments for '{name}' command"
             )
 
-        # ── GET THE RIGHT DATABASE ────────────────────────
-        # Each client might have SELECTed a different database.
         db = self._keyspace.get_db(client._selected_db)
 
-        # ── EXECUTE THE HANDLER ───────────────────────────
         try:
             return spec.handler(client, db, args)
         except WrongTypeError as e:
@@ -134,38 +54,16 @@ class CommandRouter:
             return RESPSerializer.encode_error(f"ERR {e}")
 
     def register(self, spec: CommandSpec) -> None:
-        """Add a command to the registry."""
         self._registry[spec.name.upper()] = spec
 
     def get_all_commands(self) -> list:
-        """Return all registered command specs."""
         return list(self._registry.values())
 
-    # =================================================================
-    # COMMAND REGISTRATION
-    # =================================================================
-
     def _register_all_commands(self) -> None:
-        """Register every supported command."""
-
-        # ── SERVER / CONNECTION COMMANDS ───────────────────
         self._register_server_commands()
-
-        # ── STRING COMMANDS ───────────────────────────────
         self._register_string_commands()
-
-        # Uncomment as you build each data structure:
         self._register_list_commands()
-        # self._register_hash_commands()
-        # self._register_set_commands()
-        # self._register_sorted_set_commands()
-
-        # ── KEY COMMANDS ──────────────────────────────────
         self._register_key_commands()
-
-    # =================================================================
-    # SERVER COMMANDS — PING, ECHO, SELECT, DBSIZE, etc.
-    # =================================================================
 
     def _register_list_commands(self) -> None:
 
@@ -297,7 +195,6 @@ class CommandRouter:
         def cmd_select(client, db, args) -> bytes:
             try:
                 index = int(args[0])
-                # Validate the index is in range by trying to get it.
                 self._keyspace.get_db(index)
                 client._selected_db = index
                 return RESPSerializer.encode_simple_string("OK")
@@ -320,7 +217,6 @@ class CommandRouter:
             return RESPSerializer.encode_simple_string("OK")
 
         def cmd_command(client, db, args) -> bytes:
-            # Simplified: return count of registered commands.
             count = len(self._registry)
             return RESPSerializer.encode_integer(count)
 
@@ -341,10 +237,6 @@ class CommandRouter:
         self.register(CommandSpec("COMMAND", cmd_command, 0, -1, {"readonly"}))
         self.register(CommandSpec("TIME", cmd_time, 0, 0, {"readonly", "fast"}))
 
-    # =================================================================
-    # STRING COMMANDS — GET, SET, INCR, DECR, APPEND, etc.
-    # =================================================================
-
     def _register_string_commands(self) -> None:
 
         def cmd_get(client, db, args) -> bytes:
@@ -359,11 +251,11 @@ class CommandRouter:
             key = args[0]
             value = args[1]
 
-            # Parse optional flags: EX, PX, NX, XX
-            ex = None   # seconds TTL
-            px = None   # milliseconds TTL
-            nx = False  # only set if NOT exists
-            xx = False  # only set if DOES exist
+            # parse optional flags
+            ex = None
+            px = None
+            nx = False
+            xx = False
 
             i = 2
             while i < len(args):
@@ -383,18 +275,15 @@ class CommandRouter:
                 else:
                     return RESPSerializer.encode_error("ERR syntax error")
 
-            # NX: only set if key does NOT exist
             if nx and db.get(key) is not None:
                 return RESPSerializer.encode_bulk_string(None)
 
-            # XX: only set if key DOES exist
             if xx and db.get(key) is None:
                 return RESPSerializer.encode_bulk_string(None)
 
             rstring = RedisString(value)
             db.set(key, rstring, ValueType.STRING)
 
-            # Apply TTL if requested
             if ex is not None:
                 entry = db.get(key)
                 import time
@@ -527,10 +416,6 @@ class CommandRouter:
         self.register(CommandSpec("GETRANGE", cmd_getrange, 3, 3, {"readonly"}))
         self.register(CommandSpec("SETRANGE", cmd_setrange, 3, 3, {"write"}))
 
-    # =================================================================
-    # KEY COMMANDS — DEL, EXISTS, TYPE, RENAME, EXPIRE, TTL, etc.
-    # =================================================================
-
     def _register_key_commands(self) -> None:
 
         def cmd_del(client, db, args) -> bytes:
@@ -598,7 +483,7 @@ class CommandRouter:
             if entry is None:
                 return RESPSerializer.encode_integer(0)
             if entry.expires_at is None:
-                return RESPSerializer.encode_integer(0)  # no expiry to remove
+                return RESPSerializer.encode_integer(0)
             entry.expires_at = None
             return RESPSerializer.encode_integer(1)
 

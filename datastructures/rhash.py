@@ -6,7 +6,7 @@ class RedisHash:
         self._data: Dict[str, str] = {}
 
     def hset(self, *field_value_pairs) -> int:
-        """Set one or more field-value pairs. Return count of new fields added."""
+        """Set field-value pairs, return count of new fields."""
         if len(field_value_pairs) % 2 != 0:
             raise ValueError("Field-value pairs must come in pairs")
         added = 0
@@ -44,29 +44,22 @@ class RedisHash:
         return len(self._data)
 
     def hincrby(self, field: str, amount: int) -> int:
-        """Increment field's integer value by amount."""
+        """Increment field by integer amount."""
         current = int(self._data.get(field, "0"))
         current += amount
         self._data[field] = str(current)
         return current
 
     def hincrbyfloat(self, field: str, amount: float) -> float:
-        """Increment field's float value by amount."""
+        """Increment field by float amount."""
         current = float(self._data.get(field, "0"))
         current += amount
         self._data[field] = str(current)
         return current
 
     def hscan(self, cursor: int = 0, pattern: str = "*", count: int = 10) -> Tuple[int, Dict[str, str]]:
-        """
-        Incremental iteration over hash fields.
-        - cursor: starting index in list of keys
-        - pattern: glob-style pattern (*, ?, [abc])
-        - count: max items to return
-        Returns (next_cursor, dict_of_items)
-        """
         keys = list(self._data.keys())
-        # Convert glob-style pattern to regex
+        # convert glob pattern to regex
         regex = re.compile("^" + re.escape(pattern).replace(r"\*", ".*").replace(r"\?", ".") + "$")
         result: Dict[str, str] = {}
         scanned = 0
